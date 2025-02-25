@@ -1,6 +1,6 @@
 # LoL
 December 2023 Statistics Minor Capstone Project 
-Hello. This is my GitHub Repository for my 2023 Statistics Minor Capstone Project: Impact of Player Metrics and Team Strategies on Match Wins. 
+This is my GitHub Repository for my 2023 Statistics Minor Capstone Project: Impact of Player Metrics and Team Strategies on Match Wins. 
 
 Project Overview
 
