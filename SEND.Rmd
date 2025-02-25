@@ -1,0 +1,516 @@
+---
+title: "LeagueofLegends"
+output: pdf_document
+date: "2023-12-06"
+---
+
+```{r}
+league_data <- read.csv("LOL_2020_data.csv", sep = ";", na.strings = c('NULL'))
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(corrplot)
+library(ggplot2)
+library(caret)
+```
+
+```{r}
+# Convert the character column to a date-time object
+league_data$date <- as.POSIXct(league_data$date, format = "%d/%m/%Y %H:%M")
+
+# Check the structure of the dataset after conversion
+str(league_data)
+
+# Most data that are NULL are 0 for numeric columns
+league_data <- league_data %>%
+  mutate(across(where(is.numeric), ~ifelse(is.na(.), 0, .)))
+
+################
+# Dataset refining/editing
+################
+data = league_data
+data$gameId = NULL
+# Too many times for analysis, look up time analysis if I want to look at the effect of time 
+data$date = NULL
+data <- data %>%
+  mutate(across(where(is.numeric), ~ifelse(is.na(.), 0, .)))
+
+# Identify and print variables with the same character entries for all rows
+# Mainly for role picked during the game 
+for (col in names(data)) {
+  if (is.character(data[[col]]) && length(unique(data[[col]])) == 1) {
+    cat(paste("Variable:", col, "has the same entry for all rows. Removing...\n"))
+    data <- data[, -which(names(data) == col)]
+  }
+}
+
+# Replace NA values in 'split' column with 'No split'
+data$split <- ifelse(is.na(data$split), 'No split', data$split)
+# Replace NA values in ban columns with 'No ban'
+ban_columns <- c("t1_ban1", "t1_ban2", "t1_ban3", "t1_ban4", "t1_ban5", "t2_ban1", "t2_ban2", "t2_ban3", "t2_ban4", "t2_ban5")
+for (col in ban_columns) {
+  data[[col]] <- ifelse(is.na(data[[col]]), 'No ban', data[[col]])
+}
+
+# Convert character variables to factors if needed
+data <- as.data.frame(lapply(data, function(x) if(is.character(x)) as.factor(x) else x))
+
+# Function to label factors and keep track of labels
+# Changing factors to numbers and then saving the conversion for interpretability
+# Gather factor columns into a list
+factor_columns <- data %>%
+  select_if(is.factor) %>%
+  gather() %>%
+  distinct(value)
+
+# Create a new table with unique factor values and assigned numbers
+mapping_table <- tibble(
+  factor_values = factor_columns$value,
+  mapping_numbers = seq_along(factor_columns$value)
+)
+
+for (col in names(data)) {
+  if (is.factor(data[[col]])) {
+    data[[col]] <- mapping_table$mapping_numbers[match(data[[col]], mapping_table$factor_values)]
+  }
+}
+
+# Print the result
+
+```
+
+```{r}
+#Extract the column names corresponding to t1 and t2
+t1_column_names <- grep("^t1", colnames(data), value = TRUE)
+t2_column_names <- grep("^t2", colnames(data), value = TRUE)
+#Extract column names that do not have t1 or t2 in their names
+other_column_names <- c('league', 'split', 'game', 'playoffs', 'patch', 'gamelength')
+
+#Splitting the dataset based on team
+train_data <- data[, c(t1_column_names, other_column_names)]
+test_data <- data[, c(t2_column_names, other_column_names)]
+
+#Rename columns in the testing dataset to match t1 variable names
+colnames(test_data) <- gsub("^t2", "t1", colnames(test_data))
+```
+
+```{r}
+cols_to_replace <- c("t1_dragons", "t1_elementaldrakes", "t1_infernals","t1_mountains","t1_clouds","t1_oceans","t1_elders","t1_heralds","t1_barons")
+
+# Replace NA with 0 in selected columns
+train_data[cols_to_replace][is.na(train_data[cols_to_replace])] <- 0
+
+```
+
+```{r}
+cols_to_replace2 <- c("t1_dragons", "t1_elementaldrakes", "t1_infernals","t1_mountains","t1_clouds","t1_oceans","t1_elders","t1_heralds","t1_barons")
+
+# Replace NA with 0 in selected columns
+test_data[cols_to_replace2][is.na(test_data[cols_to_replace])] <- 0
+```
+
+```{r}
+# Create the new columns for monster objectives and structure objectives
+test_data$monster_objectives <- rowSums(test_data[, c("t1_dragons", "t1_elementaldrakes", "t1_infernals", 
+                                                      "t1_mountains", "t1_clouds", "t1_oceans", 
+                                                      "t1_elders", "t1_heralds", "t1_barons")])
+
+test_data$structure_objectives <- rowSums(test_data[, c("t1_towers", "t1_inhibitors")])
+
+# View the updated dataset
+head(test_data)  # To check if the new columns are added properly
+```
+
+```{r}
+
+train_data$dragon_objectives <- rowSums(train_data[, c("t1_dragons", "t1_elementaldrakes", "t1_infernals", 
+                                                      "t1_mountains", "t1_clouds", "t1_oceans", 
+                                                      "t1_elders")])
+
+train_data$bigbug_objectives <- rowSums(train_data[, c("t1_heralds", "t1_barons")])
+
+# View the updated dataset
+head(train_data)  # To check if the new columns are added properly
+test_data$dragon_objectives <- rowSums(test_data[, c("t1_dragons", "t1_elementaldrakes", "t1_infernals", 
+                                                      "t1_mountains", "t1_clouds", "t1_oceans", 
+                                                      "t1_elders")])
+
+test_data$bigbug_objectives <- rowSums(test_data[, c("t1_heralds", "t1_barons")])
+#----------------------
+train_data$monster_objectives <- rowSums(train_data[, c("t1_dragons", "t1_elementaldrakes", "t1_infernals", 
+                                                      "t1_mountains", "t1_clouds", "t1_oceans", 
+                                                      "t1_elders", "t1_heralds", "t1_barons")])
+
+train_data$structure_objectives <- rowSums(train_data[, c("t1_towers", "t1_inhibitors")])
+
+# View the updated dataset
+head(train_data)  # To check if the new columns are added properly
+test_data$monster_objectives <- rowSums(test_data[, c("t1_dragons", "t1_elementaldrakes", "t1_infernals", 
+                                                      "t1_mountains", "t1_clouds", "t1_oceans", 
+                                                      "t1_elders", "t1_heralds", "t1_barons")])
+
+test_data$structure_objectives <- rowSums(test_data[, c("t1_towers", "t1_inhibitors")])
+
+# View the updated dataset
+head(test_data)  # To check if the new columns are added properly
+#ADD KDA AND CS TO TEST DATA
+for (i in 1:5) {
+  kills_col <- paste0("t1p", i, "_kills")
+  deaths_col <- paste0("t1p", i, "_deaths")
+  assists_col <- paste0("t1p", i, "_assists")
+  minion_kills_col <- paste0("t1p", i, "_minionkills")
+  monster_kills_col <- paste0("t1p", i, "_monsterkills")
+  
+  # Calculate KDA for each player (checking for possible division by zero)
+  KDA_players <- ifelse(test_data[[deaths_col]] == 0, NA, (test_data[[kills_col]] + test_data[[assists_col]]) / test_data[[deaths_col]])
+  test_data[[paste0("KDA_player", i)]] <- KDA_players
+  
+  # Calculate combined kills (minions + monsters) for each player
+  combined_kills_players <- test_data[[minion_kills_col]]  + test_data[[monster_kills_col]]
+  test_data[[paste0("CS_player", i)]] <- combined_kills_players
+}
+
+# Remove rows with NA values (if needed)
+test_data <- test_data[complete.cases(test_data), ]
+train_data <- train_data[complete.cases(train_data), ]
+#ADD KDA AND CS TO TRAINING DATA
+for (i in 1:5) {
+  kills_col <- paste0("t1p", i, "_kills")
+  deaths_col <- paste0("t1p", i, "_deaths")
+  assists_col <- paste0("t1p", i, "_assists")
+  minion_kills_col <- paste0("t1p", i, "_minionkills")
+  monster_kills_col <- paste0("t1p", i, "_monsterkills")
+  
+  # Calculate KDA for each player (checking for possible division by zero)
+  KDA_players <- ifelse(train_data[[deaths_col]] == 0, NA, (train_data[[kills_col]] + train_data[[assists_col]]) / train_data[[deaths_col]])
+  train_data[[paste0("KDA_player", i)]] <- KDA_players
+  
+  # Calculate combined kills (minions + monsters) for each player
+  combined_kills_players <- train_data[[minion_kills_col]]  + train_data[[monster_kills_col]]
+  train_data[[paste0("CS_player", i)]] <- combined_kills_players
+}
+
+# Remove rows with NA values (if needed)
+names(test_data) <- sub("^t1p1_", "Sup_", names(test_data))
+names(test_data) <- sub("^t1p2_", "Bot_", names(test_data))
+names(test_data) <- sub("^t1p3_", "Mid_", names(test_data))
+names(test_data) <- sub("^t1p4_", "Jng_", names(test_data))
+names(test_data) <- sub("^t1p5_", "Top_", names(test_data))
+
+names(train_data) <- sub("^t1p1_", "Sup_", names(train_data))
+names(train_data) <- sub("^t1p2_", "Bot_", names(train_data))
+names(train_data) <- sub("^t1p3_", "Mid_", names(train_data))
+names(train_data) <- sub("^t1p4_", "Jng_", names(train_data))
+names(train_data) <- sub("^t1p5_", "Top_", names(train_data))
+train_data <- train_data[complete.cases(train_data), ]
+
+```
+
+```{r}
+#merges the dataset
+merged_db <- rbind(train_data, test_data)
+
+```
+
+# DATA ANALYSIS GLM()
+
+```{r}
+# Selecting predictors PLAYER METRICS and target variable
+predictors_playermetrics <- c('KDA_player1', 'KDA_player2', 'KDA_player3', 'KDA_player4', 'KDA_player5', 'CS_player1', 'CS_player2', 'CS_player3', 'CS_player4', 'CS_player5','Sup_damagetochampions','Bot_damagetochampions', 'Mid_damagetochampions','Jng_damagetochampions','Top_damagetochampions','Sup_earnedgold','Bot_earnedgold','Mid_earnedgold','Jng_earnedgold','Top_earnedgold','Sup_visionscore','Bot_visionscore','Mid_visionscore','Jng_visionscore','Top_visionscore','structure_objectives', 'monster_objectives', 'bigbug_objectives','t1_firstdragon' ,'t1_dragons','t1_elementaldrakes','t1_mountains','t1_clouds','t1_oceans','t1_elders', 'gamelength')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors PLAYER METRICS and target variable
+predictors_playermetrics <- c('KDA_player1', 'KDA_player2', 'KDA_player3', 'KDA_player4', 'KDA_player5', 'CS_player1', 'CS_player2', 'CS_player3', 'CS_player4', 'CS_player5','Sup_damagetochampions','Bot_damagetochampions', 'Mid_damagetochampions','Jng_damagetochampions','Top_damagetochampions','Sup_earnedgold','Bot_earnedgold','Mid_earnedgold','Jng_earnedgold','Top_earnedgold','Sup_visionscore','Bot_visionscore','Mid_visionscore','Jng_visionscore','Top_visionscore')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+correlation_matrix <- cor(model_fullteamp_data, use="pairwise.complete.obs") # Use pairwise deletion of missing values
+
+# Create the heatmap
+corrplot(correlation_matrix, method="color", type="upper", order="hclust", tl.cex = 0.7)
+```
+
+```{r best refinement}
+# Selecting predictors PLAYER METRICS and target variable
+predictors_playermetrics <- c('KDA_player1', 'KDA_player2', 'KDA_player3', 'KDA_player4', 'KDA_player5', 'CS_player1', 'CS_player2', 'CS_player3', 'CS_player5','Sup_damagetochampions', 'Mid_damagetochampions','Jng_damagetochampions','Top_damagetochampions','Sup_earnedgold','Bot_earnedgold','Mid_earnedgold','Jng_earnedgold','Top_earnedgold','Bot_visionscore')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors PLAYER METRICS(CS) and target variable
+predictors_playermetrics <- c('CS_player1', 'CS_player2', 'CS_player3','CS_player4', 'CS_player5')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors PLAYER METRICS(KDA) and target variable
+predictors_playermetrics <- c('KDA_player1', 'KDA_player2', 'KDA_player3','KDA_player4', 'KDA_player5')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors PLAYER METRICS(VISION) and target variable
+predictors_playermetrics <- c('Sup_visionscore', 'Bot_visionscore', 'Mid_visionscore','Jng_visionscore', 'Top_visionscore')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors PLAYER METRICS(VISION) and target variable
+predictors_playermetrics <- c('Sup_earnedgold', 'Bot_earnedgold', 'Mid_earnedgold','Jng_earnedgold', 'Top_earnedgold')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+# Selecting predictors TEAM STRATEGY and target variable
+predictors_teamstrategy <- c('structure_objectives', 'monster_objectives', 'bigbug_objectives','t1_firstdragon' ,'t1_dragons','t1_elementaldrakes','t1_mountains','t1_clouds','t1_oceans','t1_elders', 'gamelength')
+target_teamstrategy <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_teamstrategy <- train_data[c(predictors_teamstrategy, target_teamstrategy)]
+
+# Fit a logistic regression model
+logistic_model_teamstrategy <- glm(t1_result ~ ., data = model_teamstrategy, family = "binomial")
+
+# View model summary
+summary(logistic_model_teamstrategy)
+```
+
+```{r refined}
+# Selecting predictors TEAM STRATEGY and target variable
+predictors_teamstrategy <- c('structure_objectives', 'monster_objectives', 'bigbug_objectives' ,'t1_elementaldrakes', 'gamelength')
+target_teamstrategy <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_teamstrategy <- train_data[c(predictors_teamstrategy, target_teamstrategy)]
+
+# Fit a logistic regression model
+logistic_model_teamstrategy <- glm(t1_result ~ ., data = model_teamstrategy, family = "binomial")
+
+# View model summary
+summary(logistic_model_teamstrategy)
+```
+
+```{r}
+# Calculate correlation matrix
+correlation_matrix <- cor(model_teamstrategy, use="pairwise.complete.obs") # Use pairwise deletion of missing values
+
+# Create the heatmap
+corrplot(correlation_matrix, method="color", type="upper", order="hclust", tl.cex = 0.7)
+```
+
+# Model Evaluation
+
+```{r TEAM METRICS}
+predict <- predict(logistic_model_fullteamp, newdata = test_data, type = 'response')
+# confusion matrix
+table_mat <- table(test_data$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+```{r TEAM STRATEGY}
+predict <- predict(logistic_model_teamstrategy, newdata = test_data, type = 'response')
+# confusion matrix
+table_mat <- table(test_data$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+## not relevant code
+
+```{r}
+# Selecting predictors TEAM STRATEGY and target variable
+predictors_playermetrics <- c('KDA_player1', 'KDA_player2', 'KDA_player3', 'KDA_player4', 'KDA_player5', 'CS_player1', 'CS_player2', 'CS_player3', 'CS_player5','Sup_damagetochampions', 'Mid_damagetochampions','Jng_damagetochampions','Top_damagetochampions','Sup_earnedgold','Bot_earnedgold','Mid_earnedgold','Jng_earnedgold','Top_earnedgold','Bot_visionscore')
+target_fullteamp <- 't1_result'
+
+# Creating a dataset with predictors and target
+model_fullteamp_data <- train_data[c(predictors_playermetrics, target_fullteamp)]
+
+# Fit a logistic regression model
+logistic_model_fullteamp <- glm(t1_result ~ ., data = model_fullteamp_data, family = "binomial")
+
+# View model summary
+summary(logistic_model_fullteamp)
+```
+
+```{r}
+T1_data <- data %>% filter(t1_playerid == 33)
+
+# Calculate the column-wise mean for the filtered data
+T1_avg <- colMeans(T1_data, na.rm = TRUE)
+
+# Create a new dataframe with the averaged values
+T1_avg_df <- data.frame(t(T1_avg))
+names(T1_avg_df) <- paste("Var", seq_along(T1_avg))
+
+Cloud9_data <- data %>% filter(t1_playerid == 75)
+
+# Calculate the column-wise mean for the filtered data
+Cloud9_avg <- colMeans(Cloud9_data, na.rm = TRUE)
+
+# Create a new dataframe with the averaged values
+Cloud9_avg_df <- data.frame(t(Cloud9_avg))
+names(Cloud9_avg_df) <- paste("Var", seq_along(Cloud9_avg))
+
+G2_data <- data %>% filter(t1_playerid == 59)
+
+# Calculate the column-wise mean for the filtered data
+G2_avg <- colMeans(G2_data, na.rm = TRUE)
+
+# Create a new dataframe with the averaged values
+G2_avg_df <- data.frame(t(G2_avg))
+names(G2_avg_df) <- paste("Var", seq_along(G2_avg))
+
+merged_db_teams <- rbind(T1_avg_df, Cloud9_avg_df,G2_avg_df)
+
+```
+
+```{r}
+T1 <- subset(merged_db, t1_playerid %in% c(33))
+predict <- predict(logistic_model_teamstrategy, newdata = T1, type = 'response')
+# confusion matrix
+table_mat <- table(T1$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+```{r}
+Cloud9 <- subset(merged_db, t1_playerid %in% c(75))
+predict <- predict(logistic_model_teamstrategy, newdata = Cloud9, type = 'response')
+# confusion matrix
+table_mat <- table(Cloud9$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+```{r}
+G2 <- subset(merged_db, t1_playerid %in% c(59))
+predict <- predict(logistic_model_teamstrategy, newdata = G2, type = 'response')
+# confusion matrix
+table_mat <- table(G2$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+```{r}
+SANDBOXGAMING <- subset(merged_db, t1_playerid %in% c(32))
+predict <- predict(logistic_model_teamstrategy, newdata = SANDBOXGAMING, type = 'response')
+# confusion matrix
+table_mat <- table(SANDBOXGAMING$t1_result, predict > 0.5)
+table_mat
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+```
+
+```{r}
+t1_result <- merged_db %>%
+  group_by(t1_playerid) %>%
+  summarize(percentage_0 = mean(t1_result == 0))
+
+# Teams where the percentage of 0s is at least 75%
+teams_75_percent_0 <- t1_result %>%
+  filter(percentage_0 >= 0.75)
+print(teams_75_percent_0)
+```
+
+```{r}
+correlation_matrix <- cor(merged_db, use="pairwise.complete.obs") # Use pairwise deletion of missing values
+
+# Create the heatmap
+corrplot(correlation_matrix, method="color", type="upper", order="hclust", tl.cex = 0.7)
+```
+
+```{r}
+# Example correlation matrix (replace this with your 'correlation_matrix')
+correlation_matrix <- cor(merged_db, use = "pairwise.complete.obs")
+
+# Find highly correlated pairs (correlation >= 0.8)
+highly_correlated <- which(correlation_matrix >= 0.8 & correlation_matrix < 1, arr.ind = TRUE)
+
+# Extract variable pairs and their correlation values
+correlated_pairs <- data.frame(
+  Variable1 = rownames(correlation_matrix)[highly_correlated[, 1]],
+  Variable2 = colnames(correlation_matrix)[highly_correlated[, 2]],
+  Correlation = correlation_matrix[highly_correlated]
+)
+
+# Remove duplicates (e.g., A-B and B-A)
+correlated_pairs <- unique(t(apply(correlated_pairs[, 1:2], 1, sort)))
+
+# Show highly correlated pairs
+print(correlated_pairs)
+```
